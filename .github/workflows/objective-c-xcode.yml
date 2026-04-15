@@ -1,0 +1,111 @@
+name: Build FRPC for iOS
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build iOS Framework
+    runs-on: macos-latest
+
+    env:
+      GO_VERSION: '1.23'
+      GO111MODULE: on
+      GOPROXY: https://goproxy.cn,direct
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Prepare GOPATH structure
+        run: |
+          mkdir -p $HOME/go/src/github.com/fatedier
+          cd $HOME/go/src/github.com/fatedier
+          git clone --depth 1 https://github.com/fatedier/frp.git
+
+      - name: Modify frpc main.go package name
+        run: |
+          FRPC_MAIN="$HOME/go/src/github.com/fatedier/frp/cmd/frpc/main.go"
+          if [ -f "$FRPC_MAIN" ]; then
+            sed -i '' 's/^package main$/package FRPManager/' "$FRPC_MAIN"
+            echo "✅ Changed package name from 'main' to 'FRPManager'"
+          else
+            echo "❌ main.go not found at $FRPC_MAIN"
+            exit 1
+          fi
+
+      - name: Download Go module dependencies
+        run: |
+          cd $HOME/go/src/github.com/fatedier/frp
+          go mod download
+
+      - name: Build iOS Framework with gomobile
+        run: |
+          cd $HOME/go/src/github.com/fatedier/frp
+          CGO_ENABLED=0 GOOS=darwin \
+          gomobile bind \
+            -target=ios \
+            -o FRPC.xcframework \
+            -iosversion=13.0 \
+            github.com/fatedier/frp/cmd/frpc
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp -r $HOME/go/src/github.com/fatedier/frp/FRPC.xcframework artifacts/ 2>/dev/null || true
+          
+          # Create sample frpc.ini
+          cat > artifacts/frpc.ini << 'EOF'
+          [common]
+          server_addr = your-server-ip
+          server_port = 7000
+          token = your-token
+          
+          # Add your proxy configurations below
+          # [ssh]
+          # type = tcp
+          # local_ip = 127.0.0.1
+          # local_port = 22
+          # remote_port = 6000
+          EOF
+          
+          # Create info file
+          cat > artifacts/README.txt << 'EOF'
+          FRPC iOS Framework Build Artifacts
+          ==================================
+          
+          This package contains:
+          - FRPC.xcframework: iOS framework built with gomobile
+          - frpc.ini: Sample configuration file (customize with your own settings)
+          
+          Integration:
+          1. Drag FRPC.xcframework into your Xcode project
+          2. Add frpc.ini to your app bundle
+          3. Import "Frpc" in your Objective-C/Swift code
+          
+          Build date: $(date)
+          EOF
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FRPC-iOS-Framework
+          path: artifacts/
+          retention-days: 90
